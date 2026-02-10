@@ -21,8 +21,6 @@ jobs:
 
       - name: Install System Dependencies
         run: |
-          # Install 32-bit toolchain and libraries
-          # We explicitly install libssl-dev:i386 which might remove the 64-bit version (that is fine for this job)
           sudo apt-get install -y --no-install-recommends \
             gcc-multilib g++-multilib pkg-config \
             libgtkmm-3.0-dev:i386 \
@@ -31,6 +29,7 @@ jobs:
             libopus-dev:i386 \
             libsodium-dev:i386 \
             libsqlite3-dev:i386 \
+            libsecret-1-dev:i386 \
             zlib1g-dev:i386
 
       - name: Build nlohmann-json (32-bit)
@@ -38,13 +37,11 @@ jobs:
           git clone https://github.com/nlohmann/json deps/json
           cd deps/json && git checkout v3.11.2
           mkdir build && cd build
-          # -m32 isn't strictly needed for header-only, but good practice for CMake checks
           cmake .. -DJSON_BuildTests=OFF -DCMAKE_CXX_FLAGS="-m32" -DCMAKE_INSTALL_PREFIX=/usr/local
           sudo make install
 
       - name: Build spdlog (32-bit)
         run: |
-          # Build spdlog manually since i386 package is missing
           git clone https://github.com/gabime/spdlog deps/spdlog
           cd deps/spdlog && mkdir build && cd build
           cmake .. \
@@ -57,23 +54,28 @@ jobs:
 
       - name: Build Abaddon
         run: |
-          # PKG_CONFIG_PATH ensures we find the 32-bit libraries (gtkmm, etc.)
+          # 1. Force pkg-config to ONLY look at 32-bit libs
           export PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig
-          
-          # CXXFLAGS includes the path to the 32-bit OpenSSL headers specifically
+          export PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig
+
+          # 2. Force compiler flags
           export CXXFLAGS="-m32 -I/usr/include/i386-linux-gnu"
           export CFLAGS="-m32 -I/usr/include/i386-linux-gnu"
-          export LDFLAGS="-m32"
+          export LDFLAGS="-m32 -L/usr/lib/i386-linux-gnu"
 
+          # 3. Configure CMake
           cmake -Bbuild \
             -DCMAKE_BUILD_TYPE=${{ matrix.buildtype }} \
             -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
             -DCMAKE_C_FLAGS="$CFLAGS" \
             -DCMAKE_EXE_LINKER_FLAGS="$LDFLAGS" \
+            -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS" \
+            -DCMAKE_MODULE_LINKER_FLAGS="$LDFLAGS" \
             -DUSE_LIBHANDY=OFF \
             -DENABLE_VOICE=ON
-          
-          cmake --build build --parallel $(nproc)
+
+          # 4. Build with only 2 cores to prevent RAM crash
+          cmake --build build --parallel 2
 
       - name: Setup artifact files
         run: |
