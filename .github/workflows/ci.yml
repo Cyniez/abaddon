@@ -3,6 +3,78 @@ name: Abaddon CI
 on: [ push, pull_request ]
 
 jobs:
+  linux-i386:
+    name: linux-i386-${{ matrix.buildtype }}
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        buildtype: [ Debug, RelWithDebInfo, MinSizeRel ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Fetch CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Setup i386 Architecture
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+
+      - name: Fetch dependencies
+        run: |
+          # Install 32-bit build essentials and multilib support
+          sudo apt-get install -y gcc-multilib g++-multilib pkg-config
+          
+          # Install 32-bit versions of all required libraries
+          sudo apt-get install -y \
+            libgtkmm-3.0-dev:i386 \
+            libcurl4-gnutls-dev:i386 \
+            libopus-dev:i386 \
+            libsodium-dev:i386 \
+            libspdlog-dev:i386 \
+            libhandy-1-dev:i386 \
+            zlib1g-dev:i386
+          
+          # Build nlohmann-json as 32-bit (though it is header-only, tests/install need flags)
+          mkdir deps
+          cd deps
+          git clone https://github.com/nlohmann/json
+          cd json
+          git checkout 55f93686c01528224f448c19128836e7df245f72
+          mkdir build && cd build
+          cmake .. -DJSON_BuildTests=OFF -DCMAKE_C_FLAGS="-m32" -DCMAKE_CXX_FLAGS="-m32"
+          sudo make install
+
+      - name: Build
+        run: |
+          # Tell pkg-config to look for 32-bit libraries first
+          export PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig
+          
+          # Force the compiler to target 32-bit (m32)
+          cmake -Bbuild \
+            -DCMAKE_BUILD_TYPE=${{ matrix.buildtype }} \
+            -DCMAKE_C_FLAGS="-m32" \
+            -DCMAKE_CXX_FLAGS="-m32" \
+            -DCMAKE_EXE_LINKER_FLAGS="-m32" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-m32"
+          
+          cmake --build build
+
+      - name: Setup artifact files
+        run: |
+          artifact_dir=${{ runner.workspace }}/artifactdir/abaddon-linux-i386-${{ matrix.buildtype }}-${GITHUB_SHA::7}
+          mkdir -p "${artifact_dir}"
+          cp "${{ github.workspace }}/build/abaddon" "${artifact_dir}/abaddon"
+          cp -r "${{ github.workspace }}/res/css" "${artifact_dir}/css"
+          cp -r "${{ github.workspace }}/res/res" "${artifact_dir}/res"
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-linux-i386-${{ matrix.buildtype }}
+          path: ${{ runner.workspace }}/artifactdir
   msys2:
     name: msys2-mingw64
     runs-on: windows-latest
