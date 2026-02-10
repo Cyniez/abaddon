@@ -4,71 +4,94 @@ on: [ push, pull_request ]
 
 jobs:
   linux-i386:
-    name: linux-i386-debian-bookworm
-    runs-on: ubuntu-latest
-    # We use a native 32-bit container to avoid cross-compilation headaches
-    container:
-      image: i386/debian:bookworm
+    name: linux-i386-${{ matrix.buildtype }}
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        buildtype: [ RelWithDebInfo ]
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git ca-certificates
-
       - uses: actions/checkout@v4
         with:
           submodules: true
 
-      - name: Install Dependencies
+      - name: Setup i386 Architecture
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            g++ cmake make pkg-config \
-            libgtkmm-3.0-dev \
-            libcurl4-gnutls-dev \
-            libsqlite3-dev \
-            libssl-dev \
-            nlohmann-json3-dev \
-            libhandy-1-dev \
-            libsecret-1-dev \
-            libopus-dev \
-            libsodium-dev \
-            libspdlog-dev \
-            libasound2-dev \
-            libpulse-dev
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
 
-      - name: Build Abaddon
+      - name: Install All Dependencies
         run: |
+          sudo apt-get install -y --no-install-recommends \
+            gcc-multilib g++-multilib pkg-config \
+            libgtkmm-3.0-dev:i386 \
+            libcurl4-gnutls-dev:i386 \
+            libssl-dev:i386 \
+            libsecret-1-dev:i386 \
+            libopus-dev:i386 \
+            libsodium-dev:i386 \
+            libsqlite3-dev:i386 \
+            zlib1g-dev:i386 \
+            libasound2-dev:i386 \
+            libpulse-dev:i386
+
+      - name: Build nlohmann-json (32-bit)
+        run: |
+          git clone https://github.com/nlohmann/json deps/json
+          cd deps/json && git checkout v3.11.2
           mkdir build && cd build
-          # -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON saves RAM
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DENABLE_VOICE=ON \
-            -DENABLE_RNNOISE=ON \
-            -DUSE_LIBHANDY=ON \
-            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
-          
-          # Build with 2 cores to prevent the runner from running out of memory
-          make -j2
+          # Use /usr as prefix so the main build finds it easily
+          cmake .. -DJSON_BuildTests=OFF -DCMAKE_CXX_FLAGS="-m32" -DCMAKE_INSTALL_PREFIX=/usr
+          sudo make install
 
-      - name: Setup Artifact Files
+      - name: Build spdlog (32-bit)
         run: |
-          # Create the bundle directory
-          mkdir -p abaddon-bundle
-          
-          # Copy the binary
-          cp build/abaddon abaddon-bundle/
-          
-          # Copy the required resources (css and res folders)
-          # These must be in the same directory as the binary to work
-          cp -r res/css abaddon-bundle/
-          cp -r res/res abaddon-bundle/
-          
-          # Optional: Strip the binary to make it much smaller for 386 hardware
-          strip abaddon-bundle/abaddon
+          git clone https://github.com/gabime/spdlog deps/spdlog
+          cd deps/spdlog && mkdir build && cd build
+          cmake .. -DSPDLOG_BUILD_EXAMPLE=OFF -DSPDLOG_BUILD_TESTS=OFF -DCMAKE_CXX_FLAGS="-m32" -DCMAKE_INSTALL_PREFIX=/usr
+          make -j$(nproc)
+          sudo make install
 
-      - name: Upload Build Artifact
+      - name: Build Abaddon (32-bit)
+        run: |
+          # 1. Force pkg-config to look ONLY at 32-bit library metadata
+          export PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig
+          export PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig
+          
+          # 2. Add the architecture-specific include path (Fixes OpenSSL/libsecret headers)
+          export CXXFLAGS="-m32 -I/usr/include/i386-linux-gnu"
+          export CFLAGS="-m32 -I/usr/include/i386-linux-gnu"
+          export LDFLAGS="-m32 -L/usr/lib/i386-linux-gnu"
+
+          cmake -Bbuild \
+            -DCMAKE_BUILD_TYPE=${{ matrix.buildtype }} \
+            -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+            -DCMAKE_C_FLAGS="$CFLAGS" \
+            -DCMAKE_EXE_LINKER_FLAGS="$LDFLAGS" \
+            -DUSE_LIBHANDY=OFF \
+            -DENABLE_VOICE=ON \
+            -DENABLE_QRCODE_LOGIN=ON \
+            -DENABLE_RNNOISE=ON \
+            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+
+          # Build using 2 cores (Faster than 1, safer than 'all' for RAM)
+          cmake --build build --parallel 2
+
+      - name: Setup artifact files
+        run: |
+          # Use GITHUB_WORKSPACE for consistent paths
+          artifact_dir="${{ github.workspace }}/abaddon-i386-dist"
+          mkdir -p "${artifact_dir}"
+          
+          # Copy the binary and strip symbols to reduce size (important for old hardware)
+          cp build/abaddon "${artifact_dir}/abaddon"
+          strip "${artifact_dir}/abaddon"
+          
+          # Copy resources (Abaddon needs these in the same folder or relative to the exe)
+          cp -r res/css "${artifact_dir}/css"
+          cp -r res/res "${artifact_dir}/res"
+
+      - name: Upload build
         uses: actions/upload-artifact@v4
         with:
-          name: abaddon-linux-i386-portable
-          path: abaddon-bundle/
+          name: abaddon-linux-i386
+          path: ${{ github.workspace }}/abaddon-i386-dist/
